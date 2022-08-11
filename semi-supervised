@@ -47,6 +47,14 @@ from models.unetr2d import UNETR2D
 
 print("Successfully imported all requirements!")
 
+def sigmoid_rampup(current, rampup_length):
+    """Exponential rampup from https://arxiv.org/abs/1610.02242"""
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        return float(np.exp(-5.0 * phase * phase))
 
 def main():
     parser = argparse.ArgumentParser("Baseline for Microscopy image segmentation")
@@ -73,7 +81,7 @@ def main():
 
     # Model parameters
     parser.add_argument(
-        "--model_name", default="unet", help="select mode: unet, unetr, swinunetr"
+        "--model_name", default="unet_2", help="select mode: unet, unetr, swinunetr"
     )
     parser.add_argument("--num_class", default=3, type=int, help="segmentation classes")
     parser.add_argument(
@@ -115,8 +123,8 @@ def main():
     indices = np.arange(img_num)
     np.random.shuffle(indices)
     val_split = int(img_num * val_frac)
-    train_indices = indices[val_split:]
-    val_indices = indices[:val_split]
+    train_indices = indices[0:504]
+    val_indices = indices[504:]
 
     train_files = [
         {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
@@ -306,10 +314,11 @@ def main():
     metric_values = list()
     writer = SummaryWriter(model_path)
 
-    model1.train()
-    model2.train()
 
+    iter_num = 0
     for epoch in range(1, max_epochs):
+        model1.train()
+        model2.train()
         epoch_loss = 0
         for step, (batch_data,unlable_batch) in enumerate(zip(train_loader,unlable_loader), 1):
             inputs, labels = batch_data["img"].to(device), batch_data["label"].to(device)
@@ -353,7 +362,7 @@ def main():
 
 
 
-            consistency_weight = 0
+            consistency_weight = 0.1 * sigmoid_rampup( iter_num // 150, 200)
             model1_loss = loss1 + consistency_weight * pseudo_supervision1
             model2_loss = loss2 + consistency_weight * pseudo_supervision2
             loss = model1_loss + model2_loss
@@ -364,10 +373,12 @@ def main():
 
             optimizer1.step()
             optimizer2.step()
+
+            iter_num += 1
             epoch_loss += loss.item()
             epoch_len = len(train_ds) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
-            writer.add_scalar("train_loss", loss1.item(), epoch_len * epoch + step)
+            writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
         epoch_loss /= step
         epoch_loss_values.append(epoch_loss)
         print(f"epoch {epoch} average loss: {epoch_loss:.4f}")
@@ -378,7 +389,7 @@ def main():
             "loss": epoch_loss_values,
         }
 
-        if epoch > 20 and epoch % val_interval == 0:
+        if epoch > 15 and epoch % val_interval == 0:
             model1.eval()
             with torch.no_grad():
                 val_images = None
@@ -416,7 +427,7 @@ def main():
                 if metric > best_metric:
                     best_metric = metric
                     best_metric_epoch = epoch + 1
-                    torch.save(checkpoint, join(model_path, "best_Dice_model.pth_{:.4f}".format(best_metric)))
+                    torch.save(checkpoint, join(model_path, "best_Dice_model_{:.4f}.pth".format(best_metric)))
                     print("saved new best metric model")
                 print(
                     "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
@@ -447,5 +458,4 @@ def main():
 
 
 if __name__ == "__main__":
-    1==1
     main()
