@@ -92,7 +92,7 @@ def main():
     parser.add_argument("--max_epochs", default=200, type=int)
     parser.add_argument("--val_interval", default=5, type=int)
     parser.add_argument("--epoch_tolerance", default=100, type=int)
-    parser.add_argument("--initial_lr", type=float, default=6e-4, help="learning rate")
+    parser.add_argument("--initial_lr", type=float, default=6e-3, help="learning rate")
 
     args = parser.parse_args()
 
@@ -375,12 +375,20 @@ def main():
             optimizer2.step()
 
             iter_num += 1
+            lr_ = initial_lr * (1.0 - iter_num / 30000) ** 0.9
+            for param_group in optimizer1.param_groups:
+                param_group['lr'] = lr_
+            for param_group in optimizer2.param_groups:
+                param_group['lr'] = lr_
             epoch_loss += loss.item()
             epoch_len = len(train_ds) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
             writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
+            
         epoch_loss /= step
         epoch_loss_values.append(epoch_loss)
+        model1.eval()
+        model2.eval()
         print(f"epoch {epoch} average loss: {epoch_loss:.4f}")
         checkpoint = {
             "epoch": epoch,
@@ -388,7 +396,7 @@ def main():
             "optimizer_state_dict": optimizer1.state_dict(),
             "loss": epoch_loss_values,
         }
-
+        
         if epoch > 15 and epoch % val_interval == 0:
             model1.eval()
             with torch.no_grad():
