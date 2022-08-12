@@ -163,13 +163,11 @@ def main():
             outputs1 = model1(inputs)
             outputs2 = model2(inputs)
             
-
             labels_onehot = monai.networks.one_hot(
                 labels, args.num_class
             )  # (b,cls,256,256)
             loss1 = loss_function(outputs1, labels_onehot)
             loss2 = loss_function(outputs2, labels_onehot)
-
 
             unlable_inputs = unlable_batch["img"].to(device)
             # 然后计算无标签数据的一致性损失
@@ -184,7 +182,6 @@ def main():
             pseudo_outputs2 = torch.argmax(
                 unlable_outputs_soft2.detach(), dim=1, keepdim=False)
             
-
             pseudo_outputs1_onehot = monai.networks.one_hot(
                 pseudo_outputs1.unsqueeze(1), args.num_class
             )
@@ -195,8 +192,6 @@ def main():
                 unlable_outputs_soft1, pseudo_outputs2_onehot)
             pseudo_supervision2 = loss_function(
                 unlable_outputs_soft2, pseudo_outputs1_onehot)
-
-
 
             consistency_weight = 0.1 * ramps.sigmoid_rampup( iter_num // 150, 200)
             model1_loss = loss1 + consistency_weight * pseudo_supervision1
@@ -217,9 +212,9 @@ def main():
             for param_group in optimizer2.param_groups:
                 param_group['lr'] = lr_
             epoch_loss += loss.item()
-            # epoch_len = len(train_ds) // train_loader.batch_size
+            epoch_len = len(train_files) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
-            # writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
+            writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
 
         epoch_loss /= step
         epoch_loss_values.append(epoch_loss)
@@ -233,7 +228,7 @@ def main():
             "loss": epoch_loss_values,
         }
         
-        if epoch > 15 and epoch % val_interval == 0:
+        if epoch > 2 and epoch % val_interval == 0:
             model1.eval()
             with torch.no_grad():
                 val_images = None
@@ -256,13 +251,7 @@ def main():
                         post_gt(i) for i in decollate_batch(val_labels_onehot)
                     ]
                     # compute metric for current iteration
-                    print(
-                        os.path.basename(
-                            val_data["img_meta_dict"]["filename_or_obj"][0]
-                        ),
-                        dice_metric(y_pred=val_outputs, y=val_labels_onehot),
-                    )
-
+                    dice_metric(y_pred=val_outputs, y=val_labels_onehot)
                 # aggregate the final mean dice result
                 metric = dice_metric.aggregate().item()
                 # reset the status for next validation round
