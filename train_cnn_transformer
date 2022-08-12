@@ -73,12 +73,14 @@ def main():
     img_num = len(img_names)
     unlable_img_num = len(unlable_img_names)
 
-    val_frac = 0.5
+    val_frac = 0.3
     indices = np.arange(img_num)
+    unlable_indices = np.arange(unlable_img_num)
     np.random.shuffle(indices)
+    np.random.shuffle(unlable_indices)
     val_split = int(img_num * val_frac)
-    train_indices = indices[0:504]
-    val_indices = indices[504:]
+    train_indices = indices[val_split:]
+    val_indices = indices[:val_split]
 
     train_files = [
         {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
@@ -90,7 +92,7 @@ def main():
     ]
     unlable_files = [
         {"img": join(unlable_img_path, unlable_img_names[i]), "label": join(unlable_gt_path, unlable_img_names[i])}
-        for i in np.arange(unlable_img_num)
+        for i in unlable_indices
     ]
 
     print(
@@ -112,7 +114,7 @@ def main():
     post_gt = Compose([EnsureType(), AsDiscrete(to_onehot=None)])
     # create UNet, DiceLoss and Adam optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
     model1 = monai.networks.nets.UNet(
         spatial_dims=2,
         in_channels=3,
@@ -130,13 +132,15 @@ def main():
             spatial_dims=2,
         ).to(device)
 
+    checkpoint = torch.load(join(args.model_path, 'best_Dice_model_0.5865.pth'), map_location=torch.device(device))
+    model1.load_state_dict(checkpoint['model_state_dict'])
 
     loss_function = monai.losses.DiceCELoss(softmax=True)
     initial_lr = args.initial_lr
 
     optimizer1 = torch.optim.SGD(model1.parameters(), lr=initial_lr,
                            momentum=0.9, weight_decay=0.0001)
-    optimizer2 = torch.optim.SGD(model1.parameters(), lr=initial_lr,
+    optimizer2 = torch.optim.SGD(model2.parameters(), lr=initial_lr,
                            momentum=0.9, weight_decay=0.0001)
                            
     # start a typical PyTorch training
@@ -228,7 +232,7 @@ def main():
             "loss": epoch_loss_values,
         }
         
-        if epoch > 2 and epoch % val_interval == 0:
+        if epoch > 5 and epoch % val_interval == 0:
             model1.eval()
             with torch.no_grad():
                 val_images = None
