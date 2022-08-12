@@ -6,8 +6,7 @@ Adapted form MONAI Tutorial: https://github.com/Project-MONAI/tutorials/tree/mai
 
 import argparse
 import os
-from .utils.config import return_args
-os.environ["CUDA_VISIBLE_DEVICES"] = "5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
 join = os.path.join
 
 import numpy as np
@@ -18,7 +17,6 @@ import monai
 from monai.data import decollate_batch, PILReader
 from monai.inferers import sliding_window_inference
 from monai.metrics import DiceMetric
-from sklearn.metrics import f1_score
 from monai.transforms import (
     Activations,
     AsChannelFirstd,
@@ -39,6 +37,7 @@ from monai.transforms import (
     EnsureTyped,
     EnsureType,
 )
+from dataset import data_interface
 from monai.visualize import plot_2d_or_3d_image
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -98,122 +97,10 @@ def main():
         f"training image num: {len(train_files)}, validation image num: {len(val_files)},unlable training image num:{len(unlable_files)}"
     )
 
-
-    #%% define transforms for image and segmentation
-    train_transforms = Compose(
-        [
-            LoadImaged(
-                keys=["img", "label"], reader=PILReader, dtype=np.uint8
-            ),  # image three channels (H, W, 3); label: (H, W)
-            AddChanneld(keys=["label"], allow_missing_keys=True),  # label: (1, H, W)
-            AsChannelFirstd(
-                keys=["img"], channel_dim=-1, allow_missing_keys=True
-            ),  # image: (3, H, W)
-            ScaleIntensityd(
-                keys=["img"], allow_missing_keys=True
-            ),  # Do not scale label
-            SpatialPadd(keys=["img", "label"], spatial_size=args.input_size),
-            RandSpatialCropd(
-                keys=["img", "label"], roi_size=args.input_size, random_size=False
-            ),
-            RandAxisFlipd(keys=["img", "label"], prob=0.5),
-            RandRotate90d(keys=["img", "label"], prob=0.5, spatial_axes=[0, 1]),
-            # # intensity transform
-            RandGaussianNoised(keys=["img"], prob=0.25, mean=0, std=0.1),
-            RandAdjustContrastd(keys=["img"], prob=0.25, gamma=(1, 2)),
-            RandGaussianSmoothd(keys=["img"], prob=0.25, sigma_x=(1, 2)),
-            RandHistogramShiftd(keys=["img"], prob=0.25, num_control_points=3),
-            RandZoomd(
-                keys=["img", "label"],
-                prob=0.15,
-                min_zoom=0.8,
-                max_zoom=1.5,
-                mode=["area", "nearest"],
-            ),
-            EnsureTyped(keys=["img", "label"]),
-        ]
-    )
-
-    val_transforms = Compose(
-        [
-            LoadImaged(keys=["img", "label"], reader=PILReader, dtype=np.uint8),
-            AddChanneld(keys=["label"], allow_missing_keys=True),
-            AsChannelFirstd(keys=["img"], channel_dim=-1, allow_missing_keys=True),
-            ScaleIntensityd(keys=["img"], allow_missing_keys=True),
-            # AsDiscreted(keys=['label'], to_onehot=3),
-            EnsureTyped(keys=["img", "label"]),
-        ]
-    )
-
-     #%% define transforms for image and segmentation
-    unlable_transforms = Compose(
-        [
-            LoadImaged(
-                keys=["img", "label"], reader=PILReader, dtype=np.uint8
-            ),  # image three channels (H, W, 3); label: (H, W)
-            AddChanneld(keys=["label"], allow_missing_keys=True),  # label: (1, H, W)
-            AsChannelFirstd(
-                keys=["img"], channel_dim=-1, allow_missing_keys=True
-            ),  # image: (3, H, W)
-            ScaleIntensityd(
-                keys=["img"], allow_missing_keys=True
-            ),  # Do not scale label
-            SpatialPadd(keys=["img", "label"], spatial_size=args.input_size),
-            RandSpatialCropd(
-                keys=["img", "label"], roi_size=args.input_size, random_size=False
-            ),
-            RandAxisFlipd(keys=["img", "label"], prob=0.5),
-            RandRotate90d(keys=["img", "label"], prob=0.5, spatial_axes=[0, 1]),
-            # # intensity transform
-            RandGaussianNoised(keys=["img"], prob=0.25, mean=0, std=0.1),
-            RandAdjustContrastd(keys=["img"], prob=0.25, gamma=(1, 2)),
-            RandGaussianSmoothd(keys=["img"], prob=0.25, sigma_x=(1, 2)),
-            RandHistogramShiftd(keys=["img"], prob=0.25, num_control_points=3),
-            RandZoomd(
-                keys=["img", "label"],
-                prob=0.15,
-                min_zoom=0.8,
-                max_zoom=1.5,
-                mode=["area", "nearest"],
-            ),
-            EnsureTyped(keys=["img", "label"]),
-        ]
-    )
-    #% define dataset, data loader
-    check_ds = monai.data.Dataset(data=train_files, transform=train_transforms)
-    check_loader = DataLoader(check_ds, batch_size=1, num_workers=4)
-    check_data = monai.utils.misc.first(check_loader)
-    print(
-        "sanity check:",
-        check_data["img"].shape,
-        torch.max(check_data["img"]),
-        check_data["label"].shape,
-        torch.max(check_data["label"]),
-    )
-
-    #%% create a training data loader
-    train_ds = monai.data.Dataset(data=train_files, transform=train_transforms)
-    # use batch_size=2 to load images and use RandCropByPosNegLabeld to generate 2 x 4 images for network training
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    # create a validation data loader
-    val_ds = monai.data.Dataset(data=val_files, transform=val_transforms)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=4)
-
-    # create a unlable data loader
-    unlable_ds = monai.data.Dataset(data=unlable_files, transform=unlable_transforms)
-    unlable_loader = DataLoader(
-        unlable_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
+    #%% create data loaders
+    train_loader = data_interface.return_trainloader(args=args,train_files=train_files)
+    val_loader = data_interface.return_trainloader(args,val_files)
+    unlable_loader = data_interface.return_unlableloader(args=args,unlable_files=unlable_files)
 
     dice_metric = DiceMetric(
         include_background=False, reduction="mean", get_not_nans=False
@@ -330,9 +217,9 @@ def main():
             for param_group in optimizer2.param_groups:
                 param_group['lr'] = lr_
             epoch_loss += loss.item()
-            epoch_len = len(train_ds) // train_loader.batch_size
+            # epoch_len = len(train_ds) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
-            writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
+            # writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
 
         epoch_loss /= step
         epoch_loss_values.append(epoch_loss)
