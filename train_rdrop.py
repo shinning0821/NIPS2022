@@ -6,7 +6,7 @@ Adapted form MONAI Tutorial: https://github.com/Project-MONAI/tutorials/tree/mai
 
 import argparse
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 join = os.path.join
 
 import numpy as np
@@ -16,40 +16,20 @@ from torch.utils.tensorboard import SummaryWriter
 import monai
 from monai.data import decollate_batch, PILReader
 from monai.inferers import sliding_window_inference
-from monai.metrics import DiceMetric
-from monai.transforms import (
-    Activations,
-    AsChannelFirstd,
-    AddChanneld,
-    AsDiscrete,
-    Compose,
-    LoadImaged,
-    SpatialPadd,
-    RandSpatialCropd,
-    RandRotate90d,
-    ScaleIntensityd,
-    RandAxisFlipd,
-    RandZoomd,
-    RandGaussianNoised,
-    RandAdjustContrastd,
-    RandGaussianSmoothd,
-    RandHistogramShiftd,
-    EnsureTyped,
-    EnsureType,
-)
 from dataset import data_interface
 from monai.visualize import plot_2d_or_3d_image
 import matplotlib.pyplot as plt
 from datetime import datetime
 import shutil
-from utils import ramps,config
-from models.unetr2d import UNETR2D
+from utils import ramps
+from configs import config_rdrop
+from models import valid
 from losses import kl_loss
 print("Successfully imported all requirements!")
 
 
 def main():
-    args = config.return_args()
+    args = config_rdrop.return_args()
     monai.config.print_config()
 
     #%% set training/validation split
@@ -73,12 +53,14 @@ def main():
     img_num = len(img_names)
     unlable_img_num = len(unlable_img_names)
 
-    val_frac = 0.5
+    val_frac = 0.3
     indices = np.arange(img_num)
+    unlable_indices = np.arange(unlable_img_num)
     np.random.shuffle(indices)
+    np.random.shuffle(unlable_indices)
     val_split = int(img_num * val_frac)
-    train_indices = indices[0:504]
-    val_indices = indices[504:]
+    train_indices = indices[val_split:]
+    val_indices = indices[:val_split]
 
     train_files = [
         {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
@@ -90,7 +72,7 @@ def main():
     ]
     unlable_files = [
         {"img": join(unlable_img_path, unlable_img_names[i]), "label": join(unlable_gt_path, unlable_img_names[i])}
-        for i in np.arange(unlable_img_num)
+        for i in unlable_indices
     ]
 
     print(
@@ -102,14 +84,6 @@ def main():
     val_loader = data_interface.return_trainloader(args,val_files)
     unlable_loader = data_interface.return_unlableloader(args=args,unlable_files=unlable_files)
 
-    dice_metric = DiceMetric(
-        include_background=False, reduction="mean", get_not_nans=False
-    )
-
-    post_pred = Compose(
-        [EnsureType(), Activations(softmax=True), AsDiscrete(threshold=0.5)]
-    )
-    post_gt = Compose([EnsureType(), AsDiscrete(to_onehot=None)])
     # create UNet, DiceLoss and Adam optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -130,14 +104,16 @@ def main():
         strides=(2, 2, 2, 2),
         num_res_units=2,
     ).to(device)
-
+    checkpoint1 = torch.load(join(args.model_path, 'best_Dice_model_0.5865.pth'), map_location=torch.device(device))
+    model1.load_state_dict(checkpoint1['model_state_dict'])
+    model2.load_state_dict(checkpoint1['model_state_dict'])
 
     loss_function = monai.losses.DiceCELoss(softmax=True)
-    initial_lr = args.initial_lr
+    initial_lr = args.initial_lr 
 
     optimizer1 = torch.optim.SGD(model1.parameters(), lr=initial_lr,
                            momentum=0.9, weight_decay=0.0001)
-    optimizer2 = torch.optim.SGD(model1.parameters(), lr=initial_lr,
+    optimizer2 = torch.optim.SGD(model2.parameters(), lr=initial_lr,
                            momentum=0.9, weight_decay=0.0001)
                            
     # start a typical PyTorch training
@@ -159,23 +135,23 @@ def main():
         epoch_loss = 0
         for step, (batch_data,unlable_batch) in enumerate(zip(train_loader,unlable_loader), 1):
             inputs, labels = batch_data["img"].to(device), batch_data["label"].to(device)
+            unlable_inputs = unlable_batch["img"].to(device)
 
-            # 首先进行有监督部分的损失计算
             outputs1 = model1(inputs)
             outputs2 = model2(inputs)
-            
+            unlable_outputs1 = model1(unlable_inputs)
+            unlable_outputs2 = model2(unlable_inputs)
+
+            # 首先进行有监督部分的损失计算
             labels_onehot = monai.networks.one_hot(
                 labels, args.num_class
             )  # (b,cls,256,256)
             loss1 = loss_function(outputs1, labels_onehot)
             loss2 = loss_function(outputs2, labels_onehot)
-
-            unlable_inputs = unlable_batch["img"].to(device)
+            
             # 然后计算无标签数据的一致性损失
-            unlable_outputs1 = model1(unlable_inputs)
-            unlable_outputs_soft1 = torch.softmax(unlable_outputs1, dim=1)
-
-            unlable_outputs2 = model2(unlable_inputs)
+            
+            unlable_outputs_soft1 = torch.softmax(unlable_outputs1, dim=1)            
             unlable_outputs_soft2 = torch.softmax(unlable_outputs2, dim=1)
 
             consistency_weight = 0.1 * ramps.sigmoid_rampup( iter_num // 150, 200)
@@ -205,46 +181,29 @@ def main():
         model1.eval()
         model2.eval()
         print(f"epoch {epoch} average loss: {epoch_loss:.4f}")
-        checkpoint = {
+        checkpoint_model1 = {
             "epoch": epoch,
             "model_state_dict": model1.state_dict(),
             "optimizer_state_dict": optimizer1.state_dict(),
             "loss": epoch_loss_values,
         }
+        checkpoint_model2 = {
+            "epoch": epoch,
+            "model_state_dict": model2.state_dict(),
+            "optimizer_state_dict": optimizer1.state_dict(),
+            "loss": epoch_loss_values,
+        }
         
-        if epoch > 15 and epoch % val_interval == 0:
+        if epoch > args.start_epoch and epoch % val_interval == 0:
             model1.eval()
             with torch.no_grad():
-                val_images = None
-                val_labels = None
-                val_outputs = None
-                for val_data in val_loader:
-                    val_images, val_labels = val_data["img"].to(device), val_data[
-                        "label"
-                    ].to(device)
-                    val_labels_onehot = monai.networks.one_hot(
-                        val_labels, args.num_class
-                    )
-                    roi_size = (256, 256)
-                    sw_batch_size = 4
-                    val_outputs = sliding_window_inference(
-                        val_images, roi_size, sw_batch_size, model1
-                    )
-                    val_outputs = [post_pred(i) for i in decollate_batch(val_outputs)]
-                    val_labels_onehot = [
-                        post_gt(i) for i in decollate_batch(val_labels_onehot)
-                    ]
-                    # compute metric for current iteration
-                    dice_metric(y_pred=val_outputs, y=val_labels_onehot)
-                # aggregate the final mean dice result
-                metric = dice_metric.aggregate().item()
-                # reset the status for next validation round
-                dice_metric.reset()
+                metric,val_images,val_labels,val_outputs = valid.compute_DiceMetric(args,device,val_loader,model1)
                 metric_values.append(metric)
                 if metric > best_metric:
                     best_metric = metric
                     best_metric_epoch = epoch + 1
-                    torch.save(checkpoint, join(model_path, "best_Dice_model_{:.4f}.pth".format(best_metric)))
+                    torch.save(checkpoint_model1, join(model_path, "best_Dice_model1_{:.4f}.pth".format(best_metric)))
+                    torch.save(checkpoint_model2, join(model_path, "best_Dice_model2_{:.4f}.pth".format(best_metric)))
                     print("saved new best metric model")
                 print(
                     "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
@@ -266,7 +225,8 @@ def main():
         f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}"
     )
     writer.close()
-    torch.save(checkpoint, join(model_path, "final_model.pth"))
+    torch.save(checkpoint_model1, join(model_path, "final_model.pth"))
+    torch.save(checkpoint_model2, join(model_path, "final_model.pth"))
     np.savez_compressed(
         join(model_path, "train_log.npz"),
         val_dice=metric_values,
