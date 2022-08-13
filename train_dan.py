@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import shutil
 from utils import ramps
-from configs import config_rdrop
+from configs import config_dan
 from models import valid,discriminator
 from models.discriminator import FCDiscriminator
 import torch.nn.functional as F
@@ -30,7 +30,7 @@ print("Successfully imported all requirements!")
 
 
 def main():
-    args = config_rdrop.return_args()
+    args = config_dan.return_args()
     monai.config.print_config()
 
     #%% set training/validation split
@@ -60,8 +60,8 @@ def main():
     np.random.shuffle(indices)
     np.random.shuffle(unlable_indices)
     val_split = int(img_num * val_frac)
-    train_indices = indices[val_split:]
-    val_indices = indices[:val_split]
+    train_indices = indices[296:]
+    val_indices = indices[:296]
 
     train_files = [
         {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
@@ -103,7 +103,7 @@ def main():
     # model1.load_state_dict(checkpoint1['model_state_dict'])
 
     loss_function = monai.losses.DiceCELoss(softmax=True)
-    initial_lr = args.initial_lr 
+    initial_lr = args.initial_lr / 2
 
     optimizer1 = torch.optim.SGD(model1.parameters(), lr=initial_lr,
                            momentum=0.9, weight_decay=0.0001)
@@ -143,13 +143,14 @@ def main():
                 labels, args.num_class
             )  # (b,cls,256,256)
             supervised_loss = loss_function(outputs1, labels_onehot)
-            
             DAN_outputs = DAN(
                 unlable_outputs_soft1, unlable_inputs)
 
             consistency_weight = 0.1 * ramps.sigmoid_rampup( iter_num // 150, 200)
+            # print(DAN_outputs.shape)
+            # print(DAN_Ltarget.shape)
             consistency_loss = F.cross_entropy(
-                DAN_outputs, DAN_Ltarget.long())
+                DAN_outputs, DAN_Ltarget)
             loss = supervised_loss + consistency_weight * consistency_loss            
         
             optimizer1.zero_grad()
@@ -167,8 +168,10 @@ def main():
 
             DAN_outputs1 = DAN(outputs_soft, inputs)
             DAN_outputs2 = DAN(unlable_outputs_soft1, unlable_inputs)
-            DAN_loss1 = F.cross_entropy(DAN_outputs1, DAN_Ltarget.long())
-            DAN_loss2 = F.cross_entropy(DAN_outputs2, DAN_Utarget.long())
+            # print(DAN_outputs1.shape)
+            # print(DAN_outputs2.shape)
+            DAN_loss1 = F.cross_entropy(DAN_outputs1, DAN_Ltarget)
+            DAN_loss2 = F.cross_entropy(DAN_outputs2, DAN_Utarget)
 
             DAN_loss = DAN_loss1 + DAN_loss2
             optimizer2.zero_grad()
