@@ -125,6 +125,7 @@ def main():
     iter_num = 0
     for epoch in range(1, max_epochs):
         epoch_loss = 0
+        epoch_dan = 0
         for step, (batch_data,unlable_batch) in enumerate(zip(train_loader,unlable_loader), 1):
             inputs, labels = batch_data["img"].to(device), batch_data["label"].to(device)
             unlable_inputs = unlable_batch["img"].to(device)
@@ -185,14 +186,16 @@ def main():
             for param_group in optimizer2.param_groups:
                 param_group['lr'] = lr_
             epoch_loss += loss.item()
+            epoch_dan += DAN_loss.item()
             epoch_len = len(train_files) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
             writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
 
         epoch_loss /= step
+        DAN_loss /= step
         epoch_loss_values.append(epoch_loss)
         model1.eval()
-        print(f"epoch {epoch} average loss: {epoch_loss:.4f}")
+        print(f"epoch {epoch} average loss: {epoch_loss:.4f},dan loss:{DAN_loss:.4f}")
         checkpoint_model1 = {
             "epoch": epoch,
             "model_state_dict": model1.state_dict(),
