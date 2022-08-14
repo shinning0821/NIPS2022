@@ -88,19 +88,18 @@ def main():
     # create UNet, DiceLoss and Adam optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-    model1 = monai.networks.nets.UNet(
-        spatial_dims=2,
-        in_channels=3,
-        out_channels=args.num_class,
-        channels=(16, 32, 64, 128, 256),
-        strides=(2, 2, 2, 2),
-        num_res_units=2,
-    ).to(device)
+    model1 = monai.networks.nets.SwinUNETR(
+            img_size=(args.input_size, args.input_size),
+            in_channels=3,
+            out_channels=args.num_class,
+            feature_size=24,  # should be divisible by 12
+            spatial_dims=2,
+        ).to(device)
         
     DAN = FCDiscriminator(num_classes=args.num_class)
     DAN = DAN.cuda()
-    # checkpoint1 = torch.load(join(args.model_path, 'best_Dice_model_0.5865.pth'), map_location=torch.device(device))
-    # model1.load_state_dict(checkpoint1['model_state_dict'])
+    checkpoint1 = torch.load(join(args.model_path, 'best_Dice_model_0.5820.pth'), map_location=torch.device(device))
+    model1.load_state_dict(checkpoint1['model_state_dict'])
 
     loss_function = monai.losses.DiceCELoss(softmax=True)
     initial_lr = args.initial_lr / 2
@@ -125,7 +124,8 @@ def main():
     iter_num = 0
     for epoch in range(1, max_epochs):
         epoch_loss = 0
-        epoch_dan = 0
+        epoch_dan1 = 0
+        epoch_dan2 = 0
         for step, (batch_data,unlable_batch) in enumerate(zip(train_loader,unlable_loader), 1):
             inputs, labels = batch_data["img"].to(device), batch_data["label"].to(device)
             unlable_inputs = unlable_batch["img"].to(device)
@@ -147,7 +147,7 @@ def main():
             DAN_outputs = DAN(
                 unlable_outputs_soft1, unlable_inputs)
 
-            consistency_weight = 0.1 * ramps.sigmoid_rampup( iter_num // 150, 200)
+            consistency_weight = 100 * ramps.sigmoid_rampup(0, 200) #iter_num // 150
             # print(DAN_outputs.shape)
             # print(DAN_Ltarget.shape)
             consistency_loss = F.cross_entropy(
@@ -186,16 +186,18 @@ def main():
             for param_group in optimizer2.param_groups:
                 param_group['lr'] = lr_
             epoch_loss += loss.item()
-            epoch_dan += DAN_loss.item()
+            epoch_dan2 += DAN_loss.item()
+            epoch_dan1 += (consistency_weight * consistency_loss ).item()
             epoch_len = len(train_files) // train_loader.batch_size
             # print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
             writer.add_scalar("train_loss", loss.item(), epoch_len * epoch + step)
 
         epoch_loss /= step
-        DAN_loss /= step
+        epoch_dan1 /= step
+        epoch_dan2 /= step
         epoch_loss_values.append(epoch_loss)
         model1.eval()
-        print(f"epoch {epoch} average loss: {epoch_loss:.4f},dan loss:{DAN_loss:.4f}")
+        print(f"epoch {epoch} average loss: {epoch_loss:.4f},dan1 loss:{epoch_dan1:.4f},dan2 loss:{epoch_dan2:.4f}")
         checkpoint_model1 = {
             "epoch": epoch,
             "model_state_dict": model1.state_dict(),
@@ -203,6 +205,12 @@ def main():
             "loss": epoch_loss_values,
         }
 
+        checkpoint_DAN = {
+            "epoch": epoch,
+            "model_state_dict": DAN.state_dict(),
+            "optimizer_state_dict": optimizer2.state_dict(),
+            "loss": epoch_loss_values,
+        }
         
         if epoch > args.start_epoch and epoch % val_interval == 0:
             model1.eval()
@@ -213,7 +221,7 @@ def main():
                     best_metric = metric
                     best_metric_epoch = epoch + 1
                     torch.save(checkpoint_model1, join(model_path, "best_Dice_model1_{:.4f}.pth".format(best_metric)))
-                   
+                    torch.save(checkpoint_DAN, join(model_path, "best_Dice_modeldan_{:.4f}.pth".format(best_metric)))
                     print("saved new best metric model")
                 print(
                     "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
